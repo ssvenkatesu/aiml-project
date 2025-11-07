@@ -24,7 +24,7 @@ from utils.data import (
 from utils.training import train_with_transfer_learning, evaluate_model
 
 
-st.set_page_config(page_title="AI-Assisted Drug Discovery (Demo)", layout="wide")
+st.set_page_config(page_title="AI-Assisted Drug Discovery", layout="wide")
 DEFAULT_DATA_PATH = Path(__file__).resolve().parent / "dummy_smiles.csv"
 
 
@@ -74,9 +74,9 @@ def _novelty_score(smiles: str, token_freq: dict) -> float:
 
 
 def main():
-    st.title("AI-Assisted Drug Discovery (GNN Demo)")
+    st.title("AI-Assisted Drug Discovery")
     st.markdown(
-        "This demo trains a small GNN on dummy SMILES-like data, uses transfer learning, and ranks candidates by predicted effectiveness."
+        "This demo trains a small GNN on SMILES-like data, uses transfer learning, and ranks candidates by predicted effectiveness."
     )
 
     with st.sidebar:
@@ -102,7 +102,7 @@ def main():
         st.caption(f"Device: {device}")
 
     st.subheader("Data")
-    st.write("Use built-in dummy dataset (recommended) or upload a CSV with a column 'smiles'. Optional 'label' for effectiveness.")
+    st.write("Use built-in dataset (recommended) or upload a CSV with a column 'smiles'. Optional 'label' for effectiveness.")
 
     uploaded = st.file_uploader("Upload CSV (columns: smiles[, label])", type=["csv"]) 
 

@@ -25,6 +25,22 @@ def build_tokenizer(smiles_list: List[str]) -> Dict[str, int]:
 	return tokens
 
 
+def standardize_columns(df: pd.DataFrame) -> pd.DataFrame:
+	"""Ensure common column names regardless of capitalization or synonyms."""
+	renamed = {}
+	for col in df.columns:
+		lower = col.strip().lower()
+		if lower == "smiles":
+			renamed[col] = "smiles"
+		elif lower in {"label", "target", "bioactivity", "toxicity"}:
+			renamed[col] = "label"
+		elif lower in {"compound", "compound_id", "molecule", "molid", "name"}:
+			renamed[col] = "compound"
+	if renamed:
+		df = df.rename(columns=renamed)
+	return df
+
+
 def tokenize(smiles: str, tokenizer: Dict[str, int], max_len: int) -> List[int]:
 	ids = [tokenizer.get(ch, tokenizer[UNK_TOKEN]) for ch in smiles[:max_len]]
 	if len(ids) < max_len:
@@ -50,19 +66,49 @@ def linear_chain_adjacency(length: int, max_len: int) -> np.ndarray:
 	return A
 
 
-def generate_dummy_smiles_dataset(n_samples: int, max_len: int, base_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
-	rng = np.random.default_rng(42)
+def generate_dummy_smiles_dataset(
+	n_samples: int,
+	max_len: int,
+	base_df: Optional[pd.DataFrame] = None,
+	seed: int = 42,
+) -> pd.DataFrame:
+	rng = np.random.default_rng(seed)
 	if base_df is None:
 		smiles = []
-		for _ in range(n_samples):
+		compounds = []
+		for idx in range(n_samples):
 			length = int(rng.integers(low=max_len // 2, high=max_len))
 			chars = rng.choice(ALPHABET, size=length, replace=True)
 			s = "".join(chars)
 			smiles.append(s)
-	else:
-		smiles = base_df["smiles"].astype(str).tolist()
+			compounds.append(f"Mol{idx + 1:03d}")
+		labels = _synthetic_labels(smiles, rng)
+		return pd.DataFrame({"compound": compounds, "smiles": smiles, "label": labels})
 
-	# synthetic effectiveness label: weighted counts + noise
+	# When base dataframe provided, standardise columns and honour provided labels if present.
+	df = standardize_columns(base_df.copy())
+	if "smiles" not in df.columns:
+		raise ValueError("Expected a column named 'smiles' (case-insensitive) in the dataset.")
+	if len(df) > n_samples:
+		df = df.sample(n_samples, random_state=seed).reset_index(drop=True)
+	elif len(df) < n_samples:
+		extra = generate_dummy_smiles_dataset(n_samples - len(df), max_len, base_df=None, seed=seed + 1)
+		df = pd.concat([df.reset_index(drop=True), extra], ignore_index=True)
+	if "compound" not in df.columns:
+		df["compound"] = [f"Mol{idx + 1:03d}" for idx in range(len(df))]
+	df["smiles"] = df["smiles"].astype(str)
+	if "label" not in df.columns:
+		df["label"] = _synthetic_labels(df["smiles"].tolist(), rng)
+	else:
+		df["label"] = pd.to_numeric(df["label"], errors="coerce")
+		if df["label"].isnull().any():
+			df.loc[df["label"].isnull(), "label"] = _synthetic_labels(
+				df.loc[df["label"].isnull(), "smiles"].tolist(), rng
+			)
+	return df.reset_index(drop=True)
+
+
+def _synthetic_labels(smiles: List[str], rng: np.random.Generator) -> List[float]:
 	labels = []
 	for s in smiles:
 		c = s.count("C")
@@ -71,10 +117,9 @@ def generate_dummy_smiles_dataset(n_samples: int, max_len: int, base_df: Optiona
 		aromatic = s.count("=") + s.count("#")
 		length = len(s)
 		y = 0.8 * c + 1.2 * n + 0.5 * o + 0.3 * aromatic + 0.02 * length
-		y += np.random.normal(0, 0.5)
+		y += rng.normal(0, 0.5)
 		labels.append(float(y))
-
-	return pd.DataFrame({"smiles": smiles, "label": labels})
+	return labels
 
 
 def smiles_to_graph_batch(

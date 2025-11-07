@@ -19,11 +19,13 @@ from utils.data import (
     generate_dummy_smiles_dataset,
     smiles_to_graph_batch,
     split_dataset,
+    standardize_columns,
 )
 from utils.training import train_with_transfer_learning, evaluate_model
 
 
 st.set_page_config(page_title="AI-Assisted Drug Discovery (Demo)", layout="wide")
+DEFAULT_DATA_PATH = Path(__file__).resolve().parent / "dummy_smiles.csv"
 
 
 @st.cache_resource(show_spinner=False)
@@ -43,6 +45,32 @@ def make_figure(loss_history_pre: list, loss_history_fine: list):
     ax.legend()
     fig.tight_layout()
     return fig
+
+
+def _build_token_freq(smiles_list: list) -> dict:
+    freq = {}
+    total = 0
+    for s in smiles_list:
+        for ch in s:
+            freq[ch] = freq.get(ch, 0) + 1
+            total += 1
+    # smooth to avoid zero division
+    for k in list(freq.keys()):
+        freq[k] = freq[k] / max(total, 1)
+    if total == 0:
+        # fallback uniform
+        return {"<any>": 1.0}
+    return freq
+
+
+def _novelty_score(smiles: str, token_freq: dict) -> float:
+    if not smiles:
+        return 0.0
+    invs = []
+    for ch in smiles:
+        p = token_freq.get(ch, 1e-6)
+        invs.append(1.0 / max(p, 1e-6))
+    return float(sum(invs) / len(invs))
 
 
 def main():
@@ -69,6 +97,7 @@ def main():
         val_split = st.slider("Validation split (of remaining)", 0.05, 0.45, 0.1, 0.05)
 
         top_k = st.slider("Top-K ranking", 5, 50, 20, 5)
+        novelty_weight = st.slider("Novelty weight (0=ignore,1=only novelty)", 0.0, 1.0, 0.2, 0.05)
         device = get_device()
         st.caption(f"Device: {device}")
 
@@ -79,6 +108,7 @@ def main():
 
     if uploaded is not None:
         df_all = pd.read_csv(uploaded)
+        df_all = standardize_columns(df_all)
         if "smiles" not in df_all.columns:
             st.error("CSV must contain a 'smiles' column.")
             return
@@ -89,10 +119,20 @@ def main():
                 n_samples=len(df_all),
                 max_len=max_len,
                 base_df=df_all,
+                seed=seed,
             )
     else:
-        df_all = generate_dummy_smiles_dataset(n_samples=dataset_size, max_len=max_len)
-        has_label = True
+        if DEFAULT_DATA_PATH.exists():
+            base_df = pd.read_csv(DEFAULT_DATA_PATH)
+            df_all = generate_dummy_smiles_dataset(
+                n_samples=dataset_size,
+                max_len=max_len,
+                base_df=base_df,
+                seed=seed,
+            )
+        else:
+            df_all = generate_dummy_smiles_dataset(n_samples=dataset_size, max_len=max_len, seed=seed)
+        has_label = "label" in df_all.columns
 
     st.dataframe(df_all.head())
 
@@ -158,7 +198,21 @@ def main():
                 preds_all = model(x_all.to(device), a_all.to(device), m_all.to(device)).cpu().numpy().reshape(-1)
         df_ranked = df_all.copy()
         df_ranked["predicted_effectiveness"] = preds_all
-        df_ranked = df_ranked.sort_values("predicted_effectiveness", ascending=False).reset_index(drop=True)
+        # novelty scores based on token rarity from training split
+        token_freq = _build_token_freq(train_df["smiles"].astype(str).tolist())
+        df_ranked["novelty_score"] = [
+            _novelty_score(s, token_freq) for s in df_ranked["smiles"].astype(str).tolist()
+        ]
+        # combine with simple min-max normalization
+        pe = df_ranked["predicted_effectiveness"].values
+        nv = df_ranked["novelty_score"].values
+        pe_min, pe_max = float(pe.min()), float(pe.max())
+        nv_min, nv_max = float(nv.min()), float(nv.max())
+        pe_norm = (pe - pe_min) / (pe_max - pe_min + 1e-8)
+        nv_norm = (nv - nv_min) / (nv_max - nv_min + 1e-8)
+        combined = (1.0 - novelty_weight) * pe_norm + novelty_weight * nv_norm
+        df_ranked["combined_score"] = combined
+        df_ranked = df_ranked.sort_values("combined_score", ascending=False).reset_index(drop=True)
 
         st.subheader("Top Candidates")
         st.dataframe(df_ranked.head(top_k))
@@ -186,7 +240,20 @@ def main():
                 preds_all = model(x_all.to(device), a_all.to(device), m_all.to(device)).cpu().numpy().reshape(-1)
         df_ranked = df_all.copy()
         df_ranked["predicted_effectiveness"] = preds_all
-        df_ranked = df_ranked.sort_values("predicted_effectiveness", ascending=False).reset_index(drop=True)
+        # novelty based on all visible data (no train split in quick infer)
+        token_freq = _build_token_freq(df_all["smiles"].astype(str).tolist())
+        df_ranked["novelty_score"] = [
+            _novelty_score(s, token_freq) for s in df_ranked["smiles"].astype(str).tolist()
+        ]
+        pe = df_ranked["predicted_effectiveness"].values
+        nv = df_ranked["novelty_score"].values
+        pe_min, pe_max = float(pe.min()), float(pe.max())
+        nv_min, nv_max = float(nv.min()), float(nv.max())
+        pe_norm = (pe - pe_min) / (pe_max - pe_min + 1e-8)
+        nv_norm = (nv - nv_min) / (nv_max - nv_min + 1e-8)
+        combined = (1.0 - novelty_weight) * pe_norm + novelty_weight * nv_norm
+        df_ranked["combined_score"] = combined
+        df_ranked = df_ranked.sort_values("combined_score", ascending=False).reset_index(drop=True)
         st.subheader("Top Candidates")
         st.dataframe(df_ranked.head(top_k))
         csv_buf = io.StringIO()

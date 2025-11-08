@@ -102,7 +102,7 @@ def main():
         st.caption(f"Device: {device}")
 
     st.subheader("Data")
-    st.write("Use built-in dataset (recommended) or upload a CSV with a column 'smiles'. Optional 'label' for effectiveness.")
+    
 
     uploaded = st.file_uploader("Upload CSV (columns: smiles[, label])", type=["csv"]) 
 

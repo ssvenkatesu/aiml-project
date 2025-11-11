@@ -76,7 +76,7 @@ def _novelty_score(smiles: str, token_freq: dict) -> float:
 def main():
     st.title("AI-Assisted Drug Discovery")
     st.markdown(
-        "This demo trains a small GNN on SMILES-like data, uses transfer learning, and ranks candidates by predicted effectiveness."
+        "This trains a small GNN on SMILES data, uses transfer learning, and ranks candidates by predicted effectiveness."
     )
 
     with st.sidebar:
